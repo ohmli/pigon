@@ -1,0 +1,365 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Squirrel Detector</title>
+<style>
+  :root {
+    --bg: #14110d; --panel: #1f1a14; --line: #342b20; --text: #f2eadf; --muted: #a39682;
+    --accent: #e8913a; --accent-d: #b86d1f; --ok: #6fcf7a; --bad: #ef6a5b;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--text);
+         font: 15px/1.5 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; }
+  main { max-width: 980px; margin: 0 auto; padding: 24px 16px 48px; }
+  h1 { margin: 0 0 4px; font-size: 26px; }
+  .sub { margin: 0 0 20px; color: var(--muted); }
+  .stage { position: relative; background: #000; border: 1px solid var(--line); border-radius: 14px;
+           overflow: hidden; aspect-ratio: 16 / 9; }
+  .stage video, .stage canvas { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: contain; }
+  .placeholder { position: absolute; inset: 0; display: grid; place-items: center; text-align: center;
+                 color: var(--muted); padding: 24px; }
+  .placeholder b { display: block; font-size: 44px; margin-bottom: 6px; }
+  .banner { position: absolute; left: 12px; right: 12px; top: 12px; padding: 10px 14px; border-radius: 10px;
+            background: rgba(232,145,58,.95); color: #1b1006; font-weight: 700; display: none; }
+  .banner.on { display: block; animation: pop .25s ease-out; }
+  @keyframes pop { from { transform: translateY(-8px); opacity: 0; } to { transform: none; opacity: 1; } }
+  .status { position: absolute; left: 12px; bottom: 10px; padding: 3px 10px; border-radius: 99px;
+            background: rgba(0,0,0,.6); font-size: 12.5px; color: var(--muted); }
+  .bar { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; margin: 14px 0; }
+  button, .filebtn, select { font: inherit; border-radius: 10px; border: 1px solid var(--line);
+         background: var(--panel); color: var(--text); padding: 9px 16px; cursor: pointer; }
+  button.primary { background: var(--accent); border-color: var(--accent); color: #1b1006; font-weight: 700; }
+  button.primary:hover { background: var(--accent-d); border-color: var(--accent-d); }
+  button:disabled { opacity: .45; cursor: not-allowed; }
+  .filebtn input { display: none; }
+  .panel { background: var(--panel); border: 1px solid var(--line); border-radius: 14px; padding: 16px 18px; }
+  .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 16px; }
+  label { display: block; margin-bottom: 4px; color: var(--muted); font-size: 13.5px; }
+  label output { color: var(--text); font-weight: 600; }
+  input[type=range] { width: 100%; accent-color: var(--accent); }
+  .check { display: flex; align-items: center; gap: 8px; margin-top: 10px; color: var(--text); }
+  h2 { font-size: 17px; margin: 28px 0 10px; }
+  .gallery { display: grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap: 12px; }
+  .shot { background: var(--panel); border: 1px solid var(--line); border-radius: 12px; overflow: hidden; }
+  .shot img { display: block; width: 100%; }
+  .shot div { padding: 8px 10px; font-size: 13px; color: var(--muted); display: flex; justify-content: space-between; }
+  .shot a { color: var(--accent); text-decoration: none; }
+  .empty { color: var(--muted); }
+  .note { color: var(--muted); font-size: 13px; margin-top: 22px; }
+</style>
+</head>
+<body>
+<main>
+  <h1>🐿️ Squirrel Detector</h1>
+  <p class="sub">Point a camera at the yard. This page watches the feed and snaps a photo when a squirrel shows up. Everything runs locally in your browser; no video leaves your device.</p>
+
+  <div class="stage">
+    <video id="video" playsinline muted></video>
+    <canvas id="overlay"></canvas>
+    <div class="placeholder" id="placeholder"><div><b>📷</b>Press “Start camera” to begin</div></div>
+    <div class="banner" id="banner"></div>
+    <div class="status" id="status">Models not loaded yet</div>
+  </div>
+
+  <div class="bar">
+    <button class="primary" id="startBtn">Start camera</button>
+    <button id="stopBtn" disabled>Stop</button>
+    <select id="camSelect" title="Camera" disabled><option>Default camera</option></select>
+    <label class="filebtn">Test with a video file
+      <input type="file" id="fileInput" accept="video/*">
+    </label>
+  </div>
+
+  <div class="grid">
+    <div class="panel">
+      <label for="conf">Squirrel confidence needed: <output id="confOut">30%</output></label>
+      <input type="range" id="conf" min="10" max="90" value="30">
+      <label for="cool" style="margin-top:12px">Wait between photos: <output id="coolOut">8 s</output></label>
+      <input type="range" id="cool" min="2" max="60" value="8">
+    </div>
+    <div class="panel">
+      <label class="check"><input type="checkbox" id="beep" checked> Play a sound on sighting</label>
+      <label class="check"><input type="checkbox" id="notify"> Show a desktop notification</label>
+      <label class="check"><input type="checkbox" id="showAll" checked> Draw boxes on animals it checked</label>
+    </div>
+  </div>
+
+  <h2>Sightings <span id="count" style="color:var(--muted);font-weight:400"></span></h2>
+  <div class="gallery" id="gallery"><span class="empty">No squirrels yet. Photos will appear here.</span></div>
+
+  <p class="note">How it works: an object detector (COCO-SSD) looks for animal-shaped things, then an image classifier (MobileNet, trained on ImageNet's “fox squirrel” class) checks each one, plus the full frame. It works best with a clear, reasonably large squirrel. Dark footage, tiny or partly hidden squirrels, and chipmunks may be missed, and cats or branches occasionally fool it; raise the confidence slider if you get false alarms.</p>
+</main>
+
+<script src="https://cdn.jsdelivr.net/npm/@tensorflow/tfjs@4.22.0/dist/tf.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/@tensorflow-models/coco-ssd@2.2.3/dist/coco-ssd.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/@tensorflow-models/mobilenet@2.1.1/dist/mobilenet.min.js"></script>
+<script>
+(() => {
+  const $ = id => document.getElementById(id);
+  const video = $('video'), overlay = $('overlay'), octx = overlay.getContext('2d');
+  const crop = document.createElement('canvas'); crop.width = crop.height = 224;
+  const cctx = crop.getContext('2d');
+
+  // COCO classes a squirrel is commonly mislabelled as; we re-check these with the squirrel classifier.
+  const ANIMALS = new Set(['bird', 'cat', 'dog', 'teddy bear', 'bear', 'sheep', 'horse', 'cow']);
+
+  let cocoModel = null, netModel = null;
+  let stream = null, running = false, timer = null;
+  let streak = 0, lastAlert = 0, sightings = 0, bannerTimer = null;
+  let audioCtx = null;
+
+  const setStatus = t => $('status').textContent = t;
+  const pct = v => Math.round(v * 100) + '%';
+
+  // ---------- settings ----------
+  const conf = $('conf'), cool = $('cool');
+  conf.oninput = () => $('confOut').textContent = conf.value + '%';
+  cool.oninput = () => $('coolOut').textContent = cool.value + ' s';
+
+  $('notify').onchange = async e => {
+    if (e.target.checked && 'Notification' in window && Notification.permission === 'default') {
+      await Notification.requestPermission();
+    }
+    if (!('Notification' in window) || Notification.permission === 'denied') e.target.checked = false;
+  };
+
+  // ---------- models ----------
+  async function loadModels() {
+    if (cocoModel && netModel) return;
+    if (!window.tf || !window.cocoSsd || !window.mobilenet) {
+      throw new Error('Could not load the AI libraries. Check your internet connection and reload.');
+    }
+    setStatus('Loading models (first time takes a few seconds)…');
+    [cocoModel, netModel] = await Promise.all([
+      cocoSsd.load({ base: 'lite_mobilenet_v2' }),
+      mobilenet.load({ version: 2, alpha: 1.0 })
+    ]);
+    setStatus('Models ready');
+  }
+
+  // ---------- camera ----------
+  async function listCameras() {
+    try {
+      const devs = (await navigator.mediaDevices.enumerateDevices()).filter(d => d.kind === 'videoinput');
+      const sel = $('camSelect'), current = sel.value;
+      sel.innerHTML = '';
+      devs.forEach((d, i) => {
+        const o = document.createElement('option');
+        o.value = d.deviceId; o.textContent = d.label || ('Camera ' + (i + 1));
+        sel.appendChild(o);
+      });
+      if (current) sel.value = current;
+      sel.disabled = devs.length < 2;
+    } catch (_) {}
+  }
+
+  function stopStream() {
+    if (stream) stream.getTracks().forEach(t => t.stop());
+    stream = null;
+    video.srcObject = null;
+  }
+
+  async function startCamera() {
+    if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+      alert('This browser cannot access a camera here. Open the page in Chrome, Edge, Firefox or Safari (via https:// or by double-clicking the file).');
+      return;
+    }
+    $('startBtn').disabled = true;
+    try {
+      await loadModels();
+      stopStream(); video.removeAttribute('src');
+      const id = $('camSelect').value;
+      stream = await navigator.mediaDevices.getUserMedia({
+        video: Object.assign({ width: { ideal: 1280 }, height: { ideal: 720 } },
+                             id ? { deviceId: { exact: id } } : { facingMode: 'environment' }),
+        audio: false
+      });
+      video.srcObject = stream;
+      await video.play();
+      await listCameras();
+      beginLoop();
+    } catch (err) {
+      $('startBtn').disabled = false;
+      setStatus('Error');
+      alert(err.name === 'NotAllowedError'
+        ? 'Camera permission was denied. Allow camera access for this page and try again.'
+        : 'Could not start: ' + err.message);
+    }
+  }
+
+  async function startFile(file) {
+    try {
+      await loadModels();
+      stopStream();
+      video.src = URL.createObjectURL(file);
+      video.loop = true;
+      await video.play();
+      beginLoop();
+    } catch (err) {
+      setStatus('Error');
+      alert('Could not play that file: ' + err.message);
+    }
+  }
+
+  function beginLoop() {
+    running = true; streak = 0;
+    $('placeholder').style.display = 'none';
+    $('startBtn').disabled = true; $('stopBtn').disabled = false;
+    if (!audioCtx) { try { audioCtx = new (window.AudioContext || window.webkitAudioContext)(); } catch (_) {} }
+    tick();
+  }
+
+  function stop() {
+    running = false; clearTimeout(timer);
+    video.pause(); stopStream(); video.removeAttribute('src'); video.load();
+    octx.clearRect(0, 0, overlay.width, overlay.height);
+    $('placeholder').style.display = '';
+    $('startBtn').disabled = false; $('stopBtn').disabled = true;
+    setStatus('Stopped');
+  }
+
+  // ---------- detection ----------
+  async function squirrelScore(el) {
+    const res = await netModel.classify(el, 5);
+    let s = 0;
+    for (const r of res) if (/squirrel/i.test(r.className)) s += r.probability;
+    return s;
+  }
+
+  async function analyse(threshold) {
+    const vw = video.videoWidth, vh = video.videoHeight;
+    const hits = [], checked = [];
+    const preds = await cocoModel.detect(video, 20, 0.2);
+    const cands = preds.filter(p => ANIMALS.has(p.class)).sort((a, b) => b.score - a.score).slice(0, 3);
+
+    for (const p of cands) {
+      let [x, y, w, h] = p.bbox;
+      const padX = w * 0.15, padY = h * 0.15;
+      x = Math.max(0, x - padX); y = Math.max(0, y - padY);
+      w = Math.min(vw - x, w + 2 * padX); h = Math.min(vh - y, h + 2 * padY);
+      if (w < 8 || h < 8) continue;
+      cctx.drawImage(video, x, y, w, h, 0, 0, 224, 224);
+      const score = await squirrelScore(crop);
+      const item = { bbox: [x, y, w, h], score, label: p.class };
+      (score >= threshold ? hits : checked).push(item);
+    }
+
+    // Whole-frame check catches squirrels the detector didn't box.
+    if (!hits.length) {
+      const full = await squirrelScore(video);
+      if (full >= threshold) hits.push({ bbox: null, score: full, label: 'frame' });
+    }
+    return { hits, checked };
+  }
+
+  async function tick() {
+    if (!running) return;
+    const t0 = performance.now();
+    try {
+      if (video.readyState >= 2 && video.videoWidth) {
+        if (overlay.width !== video.videoWidth) { overlay.width = video.videoWidth; overlay.height = video.videoHeight; }
+        const threshold = conf.value / 100;
+        const { hits, checked } = await analyse(threshold);
+        draw(hits, checked);
+        streak = hits.length ? streak + 1 : 0;
+
+        const now = Date.now();
+        if (hits.length) setStatus('Squirrel spotted! ' + pct(Math.max(...hits.map(h => h.score))));
+        else setStatus('Watching… ' + Math.round(1000 / (performance.now() - t0)) + ' checks/s');
+
+        if (streak >= 2 && now - lastAlert >= cool.value * 1000) {
+          lastAlert = now;
+          onSighting(Math.max(...hits.map(h => h.score)));
+        }
+      }
+    } catch (err) {
+      console.error(err);
+      setStatus('Detection error: ' + err.message);
+    }
+    timer = setTimeout(tick, 60);
+  }
+
+  function box(b, color, text) {
+    const lw = Math.max(2, overlay.width / 320);
+    octx.lineWidth = lw; octx.strokeStyle = color; octx.fillStyle = color;
+    octx.strokeRect(b[0], b[1], b[2], b[3]);
+    const fs = Math.max(14, overlay.width / 50);
+    octx.font = `700 ${fs}px system-ui, sans-serif`;
+    const tw = octx.measureText(text).width + 12;
+    const ty = Math.max(0, b[1] - fs - 8);
+    octx.fillRect(b[0] - lw / 2, ty, tw, fs + 8);
+    octx.fillStyle = '#1b1006';
+    octx.fillText(text, b[0] + 5, ty + fs);
+  }
+
+  function draw(hits, checked) {
+    octx.clearRect(0, 0, overlay.width, overlay.height);
+    if ($('showAll').checked) {
+      for (const c of checked) box(c.bbox, '#8a8a8a', `${c.label} (not squirrel)`);
+    }
+    for (const h of hits) {
+      if (h.bbox) box(h.bbox, '#e8913a', `🐿 Squirrel ${pct(h.score)}`);
+      else {
+        octx.lineWidth = Math.max(4, overlay.width / 160); octx.strokeStyle = '#e8913a';
+        octx.strokeRect(0, 0, overlay.width, overlay.height);
+      }
+    }
+  }
+
+  // ---------- alerts ----------
+  function onSighting(score) {
+    sightings++;
+    const snap = document.createElement('canvas');
+    snap.width = video.videoWidth; snap.height = video.videoHeight;
+    const sctx = snap.getContext('2d');
+    sctx.drawImage(video, 0, 0); sctx.drawImage(overlay, 0, 0);
+    const url = snap.toDataURL('image/jpeg', 0.88);
+    const when = new Date();
+    addShot(url, when, score);
+
+    const b = $('banner');
+    b.textContent = `🐿️ Squirrel detected at ${when.toLocaleTimeString()} (${pct(score)})`;
+    b.classList.add('on'); clearTimeout(bannerTimer);
+    bannerTimer = setTimeout(() => b.classList.remove('on'), 4000);
+
+    if ($('beep').checked) beep();
+    if ($('notify').checked && 'Notification' in window && Notification.permission === 'granted') {
+      new Notification('Squirrel detected!', { body: `Confidence ${pct(score)}`, icon: url });
+    }
+  }
+
+  function addShot(url, when, score) {
+    const g = $('gallery');
+    if (g.querySelector('.empty')) g.innerHTML = '';
+    const d = document.createElement('div'); d.className = 'shot';
+    const name = 'squirrel_' + when.toISOString().replace(/[:.]/g, '-') + '.jpg';
+    d.innerHTML = `<img alt="Squirrel sighting"><div><span>${when.toLocaleTimeString()} · ${pct(score)}</span><a download="${name}">Save</a></div>`;
+    d.querySelector('img').src = url; d.querySelector('a').href = url;
+    g.prepend(d);
+    $('count').textContent = `(${sightings})`;
+  }
+
+  function beep() {
+    if (!audioCtx) return;
+    try {
+      const o = audioCtx.createOscillator(), g = audioCtx.createGain();
+      o.type = 'sine'; o.frequency.value = 880;
+      g.gain.setValueAtTime(0.0001, audioCtx.currentTime);
+      g.gain.exponentialRampToValueAtTime(0.25, audioCtx.currentTime + 0.02);
+      g.gain.exponentialRampToValueAtTime(0.0001, audioCtx.currentTime + 0.35);
+      o.connect(g).connect(audioCtx.destination);
+      o.start(); o.stop(audioCtx.currentTime + 0.4);
+    } catch (_) {}
+  }
+
+  // ---------- wiring ----------
+  $('startBtn').onclick = startCamera;
+  $('stopBtn').onclick = stop;
+  $('camSelect').onchange = () => { if (running && stream) { stop(); startCamera(); } };
+  $('fileInput').onchange = e => { const f = e.target.files[0]; if (f) startFile(f); e.target.value = ''; };
+})();
+</script>
+</body>
+</html>
